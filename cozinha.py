@@ -133,9 +133,8 @@ with open(
     escritor.writeheader()
     escritor.writerows(tabelas_extraidas)
 
-print("\n================================")
-print("EXTRAÇÃO FINALIZADA")
-print("================================")
+print("Extração Finalizada")
+
 
 print(f"PDFs encontrados: {len(arquivos_pdf)}")
 print(f"Cursos registrados: {len(cursos)}")
