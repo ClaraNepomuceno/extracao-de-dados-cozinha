@@ -1,145 +1,143 @@
-import pdfplumber
-from pathlib import Path
 import csv
+import re
+import unicodedata
+from pathlib import Path
 
-# Caminho dos PDFs
-PASTA_PDFS = Path(
-    r"C:\Users\ana57393876\Documents\ETl-cozinha\OneDrive_2026-10-28"
-)
-
-# Pasta para salvar os resultados
-PASTA_RESULTADOS = Path(
-    r"C:\Users\ana57393876\Documents\ETl-cozinha\resultados"
-)
-
-PASTA_RESULTADOS.mkdir(parents=True, exist_ok=True)
-
-# Encontrar todos os PDFs
-arquivos_pdf = sorted(PASTA_PDFS.rglob("*.pdf"))
-
-print(f"Total de PDFs encontrados: {len(arquivos_pdf)}")
-
-# Armazenar os dados extraídos
-cursos = []
-tabelas_extraidas = []
-
-# Percorrer todos os PDFs
-for id_curso, arquivo in enumerate(arquivos_pdf, start=1):
-
-    print(f"\nProcessando: {arquivo.name}")
-
-    try:
-        with pdfplumber.open(arquivo) as pdf:
-
-            nome_curso = None
-
-            # ETAPA 1: Identificar o nome do curso
-            for pagina in pdf.pages:
-
-                texto = pagina.extract_text()
-
-                if not texto:
-                    continue
-
-                for linha in texto.splitlines():
-
-                    if "Nome do Curso:" in linha:
-
-                        nome_curso = linha.split(
-                            "Nome do Curso:", 1
-                        )[1].strip()
-
-                        break
-
-                if nome_curso:
-                    break
-
-            # Armazenar o curso
-            cursos.append({
-                "id_curso": id_curso,
-                "nome_curso": nome_curso,
-                "arquivo": arquivo.name
-            })
-
-            print(f"Curso: {nome_curso}")
-
-            # ETAPA 2: Extrair todas as tabelas
-            for numero_pagina, pagina in enumerate(
-                pdf.pages, start=1
-            ):
-
-                tabelas = pagina.extract_tables()
-
-                for numero_tabela, tabela in enumerate(
-                    tabelas, start=1
-                ):
-
-                    for numero_linha, linha in enumerate(
-                        tabela, start=1
-                    ):
-
-                        tabelas_extraidas.append({
-                            "id_curso": id_curso,
-                            "nome_curso": nome_curso,
-                            "arquivo": arquivo.name,
-                            "pagina": numero_pagina,
-                            "tabela": numero_tabela,
-                            "linha": numero_linha,
-                            "dados": linha
-                        })
-
-    except Exception as erro:
-        print(f"Erro ao processar {arquivo.name}: {erro}")
-
-# ETAPA 3: Salvar os cursos
-with open(
-    PASTA_RESULTADOS / "cursos.csv",
-    "w",
-    newline="",
-    encoding="utf-8-sig"
-) as arquivo_csv:
-
-    escritor = csv.DictWriter(
-        arquivo_csv,
-        fieldnames=["id_curso", "nome_curso", "arquivo"],
-        delimiter=";"
-    )
-
-    escritor.writeheader()
-    escritor.writerows(cursos)
-
-# ETAPA 4: Salvar as tabelas
-with open(
-    PASTA_RESULTADOS / "tabelas_extraidas.csv",
-    "w",
-    newline="",
-    encoding="utf-8-sig"
-) as arquivo_csv:
-
-    escritor = csv.DictWriter(
-        arquivo_csv,
-        fieldnames=[
-            "id_curso",
-            "nome_curso",
-            "arquivo",
-            "pagina",
-            "tabela",
-            "linha",
-            "dados"
-        ],
-        delimiter=";"
-    )
-
-    escritor.writeheader()
-    escritor.writerows(tabelas_extraidas)
-
-print("Extração Finalizada")
+import pdfplumber
 
 
-print(f"PDFs encontrados: {len(arquivos_pdf)}")
-print(f"Cursos registrados: {len(cursos)}")
-print(f"Linhas extraídas: {len(tabelas_extraidas)}")
+BASE = Path(__file__).resolve().parent
+PASTA_PDFS = BASE / 'OneDrive_2026-10-28' / 'Dados para ETL - Cozinha'
+PASTA_RESULTADOS = BASE / 'resultados'
+ARQUIVO_SAIDA = PASTA_RESULTADOS / 'cursos_insumos_utensilios.csv'
 
-print("\nArquivos gerados:")
-print("cursos.csv")
-print("tabelas_extraidas.csv")
+SECOES_PEDIDAS = {
+	'INSUMOS': 'insumos',
+	'UTENSILIOS': 'utensilios',
+}
+SECOES_FORA_DO_ESCOPO = {
+	'EQUIPAMENTOS, MOVEIS E SOFTWARE',
+	'EQUIPAMENTOS, MOVEIS E SOFTWARES',
+	'UNIFORME',
+	'MATERIAL DE CONSUMO',
+	'MATERIAL PERMANENTE',
+	'MATERIAIS DE CONSUMO',
+}
+
+
+def normalizar_rotulo(texto):
+	texto = unicodedata.normalize('NFKD', texto or '')
+	texto = ''.join(caractere for caractere in texto if not unicodedata.combining(caractere))
+	return re.sub(r'\s+', ' ', texto).strip(' :;').upper()
+
+
+def identificar_secao(texto):
+	rotulo = normalizar_rotulo(texto)
+	if rotulo in SECOES_PEDIDAS:
+		return SECOES_PEDIDAS[rotulo]
+	if rotulo in SECOES_FORA_DO_ESCOPO:
+		return ''
+	return None
+
+
+def extrair_nome_curso(pdf):
+	padrao_principal = r'(?:Nome|Título)\s+do\s+Curso\s*:\s*([^\r\n]+)'
+	for pagina in pdf.pages:
+		texto = pagina.extract_text() or ''
+		correspondencia = re.search(padrao_principal, texto, flags=re.IGNORECASE)
+		if correspondencia:
+			return re.sub(r'\s+', ' ', correspondencia.group(1)).strip()
+
+	padrao_alternativo = r'^\s*Curso\s*:\s*(.*?)(?=\s+(?:Docente:|QTD TOTAL DE ALUNOS:|Segmento:|Carga Horária:)|\s*$)'
+	for pagina in pdf.pages:
+		texto = pagina.extract_text() or ''
+		correspondencia = re.search(padrao_alternativo, texto, flags=re.IGNORECASE | re.MULTILINE)
+		if correspondencia:
+			return re.sub(r'\s+', ' ', correspondencia.group(1)).strip()
+	return ''
+
+
+def extrair_itens(pdf):
+	itens = {'insumos': [], 'utensilios': []}
+	secao_atual = ''
+	tabela_de_itens = False
+	coluna_descricao = 1
+
+	for pagina in pdf.pages:
+		texto = pagina.extract_text() or ''
+		for linha in texto.splitlines():
+			secao = identificar_secao(linha)
+			if secao is not None:
+				secao_atual = secao
+				tabela_de_itens = False
+
+		for tabela in pagina.extract_tables():
+			for linha in tabela:
+				if not linha:
+					continue
+
+				valores = [valor or '' for valor in linha]
+				secao_encontrada = next(
+					(identificar_secao(valor) for valor in valores if identificar_secao(valor) is not None),
+					None,
+				)
+				if secao_encontrada is not None:
+					secao_atual = secao_encontrada
+					tabela_de_itens = False
+					continue
+
+				coluna_cabecalho = next(
+					(
+						indice
+						for indice, valor in enumerate(valores)
+						if 'DESCRICAO' in normalizar_rotulo(valor)
+						and 'ESPECIFICACAO' in normalizar_rotulo(valor)
+					),
+					None,
+				)
+				if coluna_cabecalho is not None:
+					coluna_descricao = coluna_cabecalho
+					tabela_de_itens = True
+					continue
+
+				if not tabela_de_itens or secao_atual not in itens:
+					continue
+				if coluna_descricao >= len(valores):
+					continue
+
+				descricao = valores[coluna_descricao].strip()
+				if descricao:
+					itens[secao_atual].append(descricao)
+
+	return itens
+
+
+def main():
+	arquivos_pdf = sorted(PASTA_PDFS.glob('*.pdf'))
+	PASTA_RESULTADOS.mkdir(parents=True, exist_ok=True)
+
+	with ARQUIVO_SAIDA.open('w', encoding='utf-8-sig', newline='') as arquivo_saida:
+		escritor = csv.DictWriter(
+			arquivo_saida,
+			fieldnames=['nome_curso', 'insumos', 'utensilios'],
+			delimiter=';',
+		)
+		escritor.writeheader()
+
+		for caminho_pdf in arquivos_pdf:
+			with pdfplumber.open(caminho_pdf) as pdf:
+				nome_curso = extrair_nome_curso(pdf)
+				itens = extrair_itens(pdf)
+
+			escritor.writerow({
+				'nome_curso': nome_curso,
+				'insumos': '\n'.join(itens['insumos']),
+				'utensilios': '\n'.join(itens['utensilios']),
+			})
+
+	print(f'PDFs processados: {len(arquivos_pdf)}')
+	print(f'Arquivo gerado: {ARQUIVO_SAIDA.relative_to(BASE)}')
+
+
+if __name__ == '__main__':
+	main()
