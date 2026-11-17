@@ -2,142 +2,211 @@ import csv
 import re
 import unicodedata
 from pathlib import Path
-
 import pdfplumber
 
+# ============================================================
+# 1. CONFIGURAÇÕES
+# ============================================================
 
 BASE = Path(__file__).resolve().parent
-PASTA_PDFS = BASE / 'OneDrive_2026-10-28' / 'Dados para ETL - Cozinha'
-PASTA_RESULTADOS = BASE / 'resultados'
-ARQUIVO_SAIDA = PASTA_RESULTADOS / 'cursos_insumos_utensilios.csv'
 
-SECOES_PEDIDAS = {
-	'INSUMOS': 'insumos',
-	'UTENSILIOS': 'utensilios',
-}
-SECOES_FORA_DO_ESCOPO = {
-	'EQUIPAMENTOS, MOVEIS E SOFTWARE',
-	'EQUIPAMENTOS, MOVEIS E SOFTWARES',
-	'UNIFORME',
-	'MATERIAL DE CONSUMO',
-	'MATERIAL PERMANENTE',
-	'MATERIAIS DE CONSUMO',
-}
+PASTA_PDFS = BASE / "OneDrive_2026-10-28" / "Dados para ETL - Cozinha"
+PASTA_RESULTADOS = BASE / "resultados"
+
+ARQUIVO_SAIDA = PASTA_RESULTADOS / "cursos_descricao_itens.csv"
+ARQUIVO_RELATORIO = PASTA_RESULTADOS / "relatorio_extracao.csv"
 
 
-def normalizar_rotulo(texto):
-	texto = unicodedata.normalize('NFKD', texto or '')
-	texto = ''.join(caractere for caractere in texto if not unicodedata.combining(caractere))
-	return re.sub(r'\s+', ' ', texto).strip(' :;').upper()
+# ============================================================
+# 2. FUNÇÕES AUXILIARES
+# ============================================================
+
+def normalizar(texto):
+    texto = unicodedata.normalize("NFKD", texto or "")
+    texto = "".join(c for c in texto if not unicodedata.combining(c))
+    return re.sub(r"\s+", " ", texto).strip(" :;").upper()
 
 
-def identificar_secao(texto):
-	rotulo = normalizar_rotulo(texto)
-	if rotulo in SECOES_PEDIDAS:
-		return SECOES_PEDIDAS[rotulo]
-	if rotulo in SECOES_FORA_DO_ESCOPO:
-		return ''
-	return None
+def limpar_texto(texto):
+    texto = texto or ""
+    return re.sub(r"\s+", " ", texto).strip()
 
 
-def extrair_nome_curso(pdf):
-	padrao_principal = r'(?:Nome|Título)\s+do\s+Curso\s*:\s*([^\r\n]+)'
-	for pagina in pdf.pages:
-		texto = pagina.extract_text() or ''
-		correspondencia = re.search(padrao_principal, texto, flags=re.IGNORECASE)
-		if correspondencia:
-			return re.sub(r'\s+', ' ', correspondencia.group(1)).strip()
+def extrair_nome_curso(pdf, caminho_pdf):
+    """Extrai o nome do curso do cabeçalho do documento ou do nome do arquivo."""
+    for pagina in pdf.pages[:3]:
+        texto = pagina.extract_text() or ""
+        padrao = r"CURSO\s*:\s*(.*?)(?=\s+(?:SEGMENTO|CARGA\s+HORÁRIA|TIPO|CÓDIGO)\s*:|$)"
+        resultado = re.search(padrao, texto, flags=re.IGNORECASE | re.DOTALL)
+        if resultado:
+            nome = limpar_texto(resultado.group(1))
+            if nome:
+                return nome
 
-	padrao_alternativo = r'^\s*Curso\s*:\s*(.*?)(?=\s+(?:Docente:|QTD TOTAL DE ALUNOS:|Segmento:|Carga Horária:)|\s*$)'
-	for pagina in pdf.pages:
-		texto = pagina.extract_text() or ''
-		correspondencia = re.search(padrao_alternativo, texto, flags=re.IGNORECASE | re.MULTILINE)
-		if correspondencia:
-			return re.sub(r'\s+', ' ', correspondencia.group(1)).strip()
-	return ''
+    # Fallback para o nome do arquivo
+    nome = caminho_pdf.stem
+    nome = re.sub(r"-\d+-horas.*$", "", nome, flags=re.IGNORECASE)
+    return nome.replace("-", " ").strip()
 
+
+def localizar_coluna_descricao(linha):
+    """Encontra o índice da coluna que contém a descrição ou especificação detalhada."""
+    for indice, valor in enumerate(linha):
+        rotulo = normalizar(valor)
+        if "DESCRICAO" in rotulo or "ESPECIFICACAO" in rotulo:
+            return indice
+    return None
+
+
+def descricao_valida(descricao):
+    """Filtra cabeçalhos e textos inválidos para manter apenas os itens reais."""
+    descricao = limpar_texto(descricao)
+    if len(descricao) < 3:
+        return False
+    
+    rotulo = normalizar(descricao)
+    ignorar = {
+        "DESCRICAO", "ESPECIFICACAO", "DESCRICAO/ESPECIFICACAO DETALHADA", 
+        "ITEM", "LOTE", "QUANTIDADE", "VALOR UNITARIO", "VALOR TOTAL", 
+        "UNIDADE", "U.M", "TIPO DE FINANCIAMENTO"
+    }
+    if rotulo in ignorar:
+        return False
+
+    if re.fullmatch(r"[\d\s.,/-]+", descricao):
+        return False
+
+    return True
+
+
+# ============================================================
+# 3. EXTRAÇÃO DE ITENS DE TODAS AS TABELAS
+# ============================================================
 
 def extrair_itens(pdf):
-	itens = {'insumos': [], 'utensilios': []}
-	secao_atual = ''
-	tabela_de_itens = False
-	coluna_descricao = 1
+    """Varre todas as tabelas do PDF coletando descrições válidas de qualquer seção."""
+    itens = []
+    coluna_descricao = None
 
-	for pagina in pdf.pages:
-		texto = pagina.extract_text() or ''
-		for linha in texto.splitlines():
-			secao = identificar_secao(linha)
-			if secao is not None:
-				secao_atual = secao
-				tabela_de_itens = False
+    for pagina in pdf.pages:
+        tabelas = pagina.extract_tables()
+        for tabela in tabelas:
+            for linha in tabela:
+                if not linha:
+                    continue
+                
+                valores = [valor or "" for valor in linha]
 
-		for tabela in pagina.extract_tables():
-			for linha in tabela:
-				if not linha:
-					continue
+                # Tenta localizar o cabeçalho da tabela se ele aparecer na página
+                col_encontrada = localizar_coluna_descricao(valores)
+                if col_encontrada is not None:
+                    coluna_descricao = col_encontrada
+                    continue
 
-				valores = [valor or '' for valor in linha]
-				secao_encontrada = next(
-					(identificar_secao(valor) for valor in valores if identificar_secao(valor) is not None),
-					None,
-				)
-				if secao_encontrada is not None:
-					secao_atual = secao_encontrada
-					tabela_de_itens = False
-					continue
+                # Se ainda não encontrou o cabeçalho, assume por padrão a 3ª coluna (índice 2), 
+                # que é onde costuma ficar a descrição na estrutura padrão (como visto na imagem).
+                if coluna_descricao is None and len(valores) > 2:
+                    coluna_descricao = 2
 
-				coluna_cabecalho = next(
-					(
-						indice
-						for indice, valor in enumerate(valores)
-						if 'DESCRICAO' in normalizar_rotulo(valor)
-						and 'ESPECIFICACAO' in normalizar_rotulo(valor)
-					),
-					None,
-				)
-				if coluna_cabecalho is not None:
-					coluna_descricao = coluna_cabecalho
-					tabela_de_itens = True
-					continue
+                if coluna_descricao is None or coluna_descricao >= len(valores):
+                    continue
 
-				if not tabela_de_itens or secao_atual not in itens:
-					continue
-				if coluna_descricao >= len(valores):
-					continue
+                descricao = limpar_texto(valores[coluna_descricao])
 
-				descricao = valores[coluna_descricao].strip()
-				if descricao:
-					itens[secao_atual].append(descricao)
+                if descricao_valida(descricao) and descricao not in itens:
+                    itens.append(descricao)
 
-	return itens
+    return itens
+
+
+# ============================================================
+# 4. PROCESSAMENTO E FLUXO PRINCIPAL
+# ============================================================
+
+def processar_pdf(caminho_pdf):
+    with pdfplumber.open(caminho_pdf) as pdf:
+        nome_curso = extrair_nome_curso(pdf, caminho_pdf)
+        itens = extrair_itens(pdf)
+    return {
+        "nome_curso": nome_curso,
+        "itens": itens
+    }
 
 
 def main():
-	arquivos_pdf = sorted(PASTA_PDFS.glob('*.pdf'))
-	PASTA_RESULTADOS.mkdir(parents=True, exist_ok=True)
+    PASTA_RESULTADOS.mkdir(parents=True, exist_ok=True)
+    arquivos_pdf = sorted(PASTA_PDFS.rglob("*.pdf"))
 
-	with ARQUIVO_SAIDA.open('w', encoding='utf-8-sig', newline='') as arquivo_saida:
-		escritor = csv.DictWriter(
-			arquivo_saida,
-			fieldnames=['nome_curso', 'insumos', 'utensilios'],
-			delimiter=';',
-		)
-		escritor.writeheader()
+    if not arquivos_pdf:
+        print(f"Nenhum PDF encontrado em: {PASTA_PDFS}")
+        return
 
-		for caminho_pdf in arquivos_pdf:
-			with pdfplumber.open(caminho_pdf) as pdf:
-				nome_curso = extrair_nome_curso(pdf)
-				itens = extrair_itens(pdf)
+    total_erros = 0
+    total_geral_itens = 0
+    relatorio = []
 
-			escritor.writerow({
-				'nome_curso': nome_curso,
-				'insumos': '\n'.join(itens['insumos']),
-				'utensilios': '\n'.join(itens['utensilios']),
-			})
+    with ARQUIVO_SAIDA.open("w", encoding="utf-8-sig", newline="") as arquivo_saida:
+        escritor = csv.DictWriter(
+            arquivo_saida,
+            fieldnames=["nome_curso", "descricao_detalhada"],
+            delimiter=";",
+            quoting=csv.QUOTE_ALL
+        )
+        escritor.writeheader()
 
-	print(f'PDFs processados: {len(arquivos_pdf)}')
-	print(f'Arquivo gerado: {ARQUIVO_SAIDA.relative_to(BASE)}')
+        for indice, caminho_pdf in enumerate(arquivos_pdf, start=1):
+            try:
+                resultado = processar_pdf(caminho_pdf)
+                nome_curso = resultado["nome_curso"]
+                itens = resultado["itens"]
+
+                # Escreve cada item encontrado em uma linha separada junto com o curso
+                for item in itens:
+                    escritor.writerow({
+                        "nome_curso": nome_curso,
+                        "descricao_detalhada": item
+                    })
+
+                qtd_itens = len(itens)
+                total_geral_itens += qtd_itens
+                status = "OK" if qtd_itens > 0 else "ALERTA - SEM ITENS"
+
+                relatorio.append({
+                    "arquivo": caminho_pdf.name,
+                    "nome_curso": nome_curso,
+                    "qtd_itens": qtd_itens,
+                    "status": status
+                })
+
+                print(f"[{indice}/{len(arquivos_pdf)}] {nome_curso} | Itens extraídos: {qtd_itens}")
+
+            except Exception as erro:
+                total_erros += 1
+                relatorio.append({
+                    "arquivo": caminho_pdf.name,
+                    "nome_curso": "",
+                    "qtd_itens": 0,
+                    "status": f"ERRO: {erro}"
+                })
+                print(f"ERRO ao processar {caminho_pdf.name}: {erro}")
+
+    # Relatório de conferência
+    with ARQUIVO_RELATORIO.open("w", encoding="utf-8-sig", newline="") as arquivo_relatorio:
+        escritor_rel = csv.DictWriter(
+            arquivo_relatorio,
+            fieldnames=["arquivo", "nome_curso", "qtd_itens", "status"],
+            delimiter=";",
+            quoting=csv.QUOTE_ALL
+        )
+        escritor_rel.writeheader()
+        escritor_rel.writerows(relatorio)
+
+    print("\n========== RESULTADO DA EXTRAÇÃO SIMPLIFICADA ==========")
+    print(f"Total de PDFs processados: {len(arquivos_pdf)}")
+    print(f"Erros: {total_erros}")
+    print(f"Total de itens extraídos: {total_geral_itens}")
+    print(f"\nArquivos salvos em: {PASTA_RESULTADOS}")
 
 
-if __name__ == '__main__':
-	main()
+if __name__ == "__main__":
+    main()
