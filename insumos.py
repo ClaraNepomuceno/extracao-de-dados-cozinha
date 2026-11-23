@@ -17,7 +17,6 @@ ARQUIVO_SAIDA = PASTA_RESULTADOS / "cursos_insumos_final_ajustado.csv"
 ARQUIVO_RELATORIO = PASTA_RESULTADOS / "relatorio_extracao_insumos.csv"
 ARQUIVO_REVISAO = PASTA_RESULTADOS / "itens_suspeitos_revisao.csv"
 
-
 # ============================================================
 # 2. NORMALIZAÇÃO E SANEAMENTO
 # ============================================================
@@ -45,11 +44,13 @@ CORRECOES_OCR_E_VARIACOES = {
     "APEROLAPERITIVO": "APEROL APERITIVO",
     "BALADEGENGIBRE": "BALA DE GENGIBRE",
     "BITTERCAMPARIITALIANO": "BITTER CAMPARI ITALIANO",
-    "CACACA BRANCA": "CACACA BRANCA",
-    "CACHACABRANCA(YPIOCA)": "CACACA BRANCA",
+    "CACACA BRANCA": "CACHACA BRANCA",
+    "CACHACABRANCA(YPIOCA)": "CACHACA BRANCA",
     "CAFEEMGRAOS": "CAFE EM GRAOS",
     "CANELAEMPAU": "CANELA EM PAU",
+    "CANELAEMCASCA": "CANELA EM CASCA",
     "CAPSULADECAFEEXPRESSODOLCEGUSTO": "CAPSULA DE CAFE EXPRESSO DOLCE GUSTO",
+    "CAPSULA DE CAFEESPRESSO DOLCEGUSTO": "CAPSULA DE CAFE EXPRESSO DOLCE GUSTO",
     "CLORETODECALCIO": "CLORETO DE CALCIO",
     "LICORCREMEDECACAU": "LICOR CREME DE CACAU",
     "FERNETBRANCA": "FERNET BRANCA",
@@ -67,6 +68,9 @@ CORRECOES_OCR_E_VARIACOES = {
     "LICORTRIPLESEC(COINTREAU)": "LICOR TRIPLE SEC",
     "MACAPERA": "MACA PERA",
     "MANJERICAOBASILICO": "MANJERICAO BASILICO",
+    "MAJERICAO": "MANJERICAO",
+    "CEBOULLETE": "CIBOULETTE",
+    "AL COOL DE CEREAIS": "ALCOOL DE CEREAIS",
     "MOLHODEPIMENTA": "MOLHO DE PIMENTA",
     "MOLHOINGLES": "MOLHO INGLES",
     "NOZMOSCADA": "NOZ MOSCADA",
@@ -85,13 +89,13 @@ CORRECOES_OCR_E_VARIACOES = {
     "XAROPEDEFRAMBOESA": "XAROPE DE FRAMBOESA",
     "XAROPEDEGENGIBRE": "XAROPE DE GENGIBRE",
     "XAROPEGRENADINE": "XAROPE GRENADINE",
-    "PAO DE FORMA": "PAO DE FORMA",
     "PIMENTADOREINOPRETAEMGRAO": "PIMENTA DO REINO PRETA EM GRAO",
     "PIMENTADOREINOBRANCAEMGRAO": "PIMENTA DO REINO BRANCA EM GRAO",
     "PIMENTADOREINOPRETAEM PO": "PIMENTA DO REINO PRETA EM PO",
     "TOMATEPELADO": "TOMATE PELADO",
     "VINHOBRANCOSECO": "VINHO BRANCO SECO",
     "SORVETEDECREME": "SORVETE DE CREME",
+    "TAMBAQUEI INTEIRO EVISCERADO": "TAMBAQUI INTEIRO EVISCERADO",
 }
 
 
@@ -102,7 +106,16 @@ def normalizar(texto: str) -> str:
 
 
 def limpar_texto(texto: str) -> str:
-    return re.sub(r"\s+", " ", texto or "").strip()
+    if not texto:
+        return ""
+    try:
+        if "Ã" in texto or "Â" in texto:
+            texto = texto.encode("latin1").decode("utf-8")
+    except Exception:
+        pass
+    texto = re.sub(r"([a-záéíóúâêôãõç])([A-ZÁÉÍÓÚÂÊÔÃÕÇ])", r"\1 \2", texto)
+    texto = re.sub(r"(\d)([A-Za-zÁÉÍÓÚÂÊÔÃÕÇáéíóúâêôãõç]{3,})", r"\1 \2", texto)
+    return re.sub(r"\s+", " ", texto).strip()
 
 
 def texto_corrompido_cid_ou_sobreposto(texto: str) -> bool:
@@ -113,37 +126,42 @@ def texto_corrompido_cid_ou_sobreposto(texto: str) -> bool:
         return True
     texto_upper = texto.upper()
 
-    # Muitos tokens curtos (1-2 chars) costumam indicar texto fragmentado/sobreposto
-    tokens_curtos = re.findall(r"\b[A-Z0-9ÁÉÍÓÚÂÊÔÃÕÇ]{1,2}\b", texto_upper)
-    if len(tokens_curtos) >= 3:
+    # Tokens de 1-2 letras soltos indicando caracteres intercalados
+    palavras_todas = re.findall(r"\b[A-Z0-9ÁÉÍÓÚÂÊÔÃÕÇ]{1,2}\b", texto_upper)
+    stop_curtas = {"DE", "DA", "DO", "EM", "AO", "OS", "AS", "UM", "E", "A", "O", "G", "L", "ML", "KG", "UN", "CX", "MC", "RA"}
+    tokens_estranhos = [t for t in palavras_todas if t not in stop_curtas and not t.isdigit()]
+    if len(tokens_estranhos) >= 2:
         return True
 
-    if re.search(r"\b[A-ZÁÉÍÓÚÂÊÔÃÕÇ]{2,}\.[A-ZÁÉÍÓÚÂÊÔÃÕÇ]{2,}", texto_upper):
+    # Pontuação grudada no meio de palavras (ex: "SAALLCAADTARSA. BEONVVAINSAA")
+    if re.search(r"\b[A-ZÁÉÍÓÚÂÊÔÃÕÇ]{2,}[.,;][A-ZÁÉÍÓÚÂÊÔÃÕÇ]{2,}", texto_upper):
+        return True
+
+    # Dígito colado em letra formando código embaralhado (ex: "S1 AKGL", "19O GSTRA")
+    if re.search(r"\b[A-Z]\d+\b|\b\d+[A-Z]\b", texto_upper):
         return True
 
     palavras = re.findall(r"[A-ZÀ-Ú]{4,}", texto_upper)
     for p in palavras:
         if re.search(r"[AEIOUÁÉÍÓÚÂÊÔÃÕ]{4,}", p):
             return True
-        if re.search(r"[BCDFGHJKLMNPQRSTVWXZ]{4,}", p):
+        if re.search(r"[BCDFGHJKLMNPQRSTVWXZ]{5,}", p):
             return True
+        # Consoantes dobradas impossíveis em português (exceto RR, SS, LL em palavras estrangeiras conhecidas)
+        if p not in {"CIBOULETTE", "CEBOULLETE", "MOZZARELLA", "CAPPUCCINO", "PROSCIUTTO", "PANNA", "COTTA", "AMARETTO", "CARPACCIO", "FETTUCCINE", "TAGLIATELLE", "PAPPARDELLE", "RICOTTA", "STRACCIATELLA", "BURRATA", "BITTER", "STPIERRE"}:
+            if re.search(r"([BCDFGHJKMNPQTVWXYZ])\1", p):
+                return True
         acentos = len(re.findall(r"[ÁÉÍÓÚÂÊÔÃÕÇ]", p))
-        if acentos >= 2 and re.search(r"[AEIOUÁÉÍÓÚÂÊÔÃÕ]{3,}", p):
-            return True
         if acentos >= 3:
             return True
-        # Palavras longas embaralhadas com letras repetidas anômalas
-        if len(p) >= 7 and re.search(r"([A-ZÁÉÍÓÚÂÊÔÃÕÇ])\1", p):
-            return True
 
-    # Deteta tokens longos ou com dígitos colados típicos de texto sobreposto
     tokens_mistos = re.findall(r"[A-Z0-9ÁÉÍÓÚÂÊÔÃÕÇ]{7,}", texto_upper)
     for tok in tokens_mistos:
         if re.search(r"[A-ZÁÉÍÓÚÂÊÔÃÕÇ]\d+[A-ZÁÉÍÓÚÂÊÔÃÕÇ]|\d+[A-ZÁÉÍÓÚÂÊÔÃÕÇ]+\d+", tok):
             return True
-        if len(tok) >= 9:
+        if len(tok) >= 10:
             vogais = len(re.findall(r"[AEIOUÁÉÍÓÚÂÊÔÃÕ]", tok))
-            if vogais == 0 or (vogais / len(tok)) < 0.25:
+            if vogais == 0 or (vogais / len(tok)) < 0.22:
                 return True
 
     return False
@@ -151,10 +169,19 @@ def texto_corrompido_cid_ou_sobreposto(texto: str) -> bool:
 
 def extrair_nome_insumo_limpo(descricao_bruta: str) -> str:
     texto = limpar_texto(descricao_bruta)
-    texto = re.sub(r"^ES\d{8,}\s*", "", texto, flags=re.IGNORECASE)
-    texto = re.sub(r"^\d+\s*[.)-]\s*", "", texto)
-    texto = re.sub(r"\s+\d+\s*(?:ML|G|GR|KG|L|UNI|M)\b.*$", "", texto, flags=re.IGNORECASE)
-    nome = re.split(r"\s*:\s*|\s+-\s+", texto, maxsplit=1)[0]
+
+    texto = re.sub(r"^(?:DE\s+MEDIDA|ITE\s*M|QUANTID(?:ADE)?|UNIDADE)\s+", "", texto, flags=re.IGNORECASE)
+    texto = re.sub(r"^(?:ES|E2|20)\d{6,}\s*", "", texto, flags=re.IGNORECASE)
+    texto = re.sub(r"^\d{1,3}\s*[.)-]\s*", "", texto)
+
+    nome = re.split(r"\s*:\s*|\s+[-–—]\s+", texto, maxsplit=1)[0]
+
+    nome = re.sub(
+        r"\s+\d+(?:[.,]\d+)?\s*(?:ML|G|GR|KG|L|UNI|UNID|UNIDADE|PCT|CX|LATA|VIDRO|GARRAFA|MACO|MC|M)\b.*$",
+        "",
+        nome,
+        flags=re.IGNORECASE,
+    )
     nome = nome.strip(" .:-;•*',")
 
     norm = normalizar(nome)
@@ -165,30 +192,61 @@ def extrair_nome_insumo_limpo(descricao_bruta: str) -> str:
 
 
 def extrair_nome_curso(pdf, caminho_pdf: Path) -> str:
-    for pagina in pdf.pages[:40]:
+    ano = ""
+    m_ano_arq = re.search(r"\b(20\d{2})\b", caminho_pdf.stem)
+    if m_ano_arq:
+        ano = m_ano_arq.group(1)
+
+    nome_encontrado = ""
+    for pagina in pdf.pages[:15]:
+        texto = limpar_texto(pagina.extract_text(x_tolerance=1.2) or "")
+        if not ano:
+            m_ano_txt = re.search(r"(?:ANO|ATUALIZACAO|ELABORACAO)\D{0,15}(20\d{2})", normalizar(texto))
+            if m_ano_txt:
+                ano = m_ano_txt.group(1)
+
         for tabela in pagina.extract_tables() or []:
             for linha in tabela:
                 celulas = [limpar_texto(c) for c in linha if c]
                 for idx, cel in enumerate(celulas):
-                    if normalizar(cel) in {"CURSO", "CURSO:"} and idx + 1 < len(celulas):
+                    if normalizar(cel) in {"CURSO", "CURSO:", "NOME DO CURSO", "TITULO DO CURSO"} and idx + 1 < len(celulas):
                         candidato = celulas[idx + 1]
-                        if candidato and normalizar(candidato) not in {"QTD TOTAL DE ALUNOS", "SEGMENTO"}:
-                            return candidato
+                        if candidato and normalizar(candidato) not in {"QTD TOTAL DE ALUNOS", "SEGMENTO", "CARGA HORARIA"}:
+                            nome_encontrado = candidato
+                            break
+                if nome_encontrado:
+                    break
+            if nome_encontrado:
+                break
 
-        texto = pagina.extract_text() or ""
-        if "(cid:" in texto.lower():
-            continue
+        if not nome_encontrado and "(cid:" not in texto.lower():
+            m1 = re.search(r"(?:NOME\s+DO\s+|TITULO\s+DO\s+)?CURSO\s*:\s*([^\n]+)", texto, flags=re.IGNORECASE)
+            if m1:
+                cand = limpar_texto(m1.group(1))
+                if cand and normalizar(cand) not in {"CURSO", "QTD TOTAL DE ALUNOS"}:
+                    nome_encontrado = cand.strip()
 
-        m1 = re.search(r"CURSO\s*:\s*([^\n]+)", texto, flags=re.IGNORECASE)
-        if m1:
-            nome = limpar_texto(m1.group(1))
-            nome = re.split(r"\s+(?:QTD\s+TOTAL|SEGMENTO|CARGA\s+HORARIA)", nome, flags=re.IGNORECASE)[0]
-            if nome and normalizar(nome) not in {"CURSO", "QTD TOTAL DE ALUNOS"}:
-                return nome.strip()
+        if nome_encontrado:
+            break
 
-    nome = caminho_pdf.stem
-    nome = re.sub(r"-\d+-horas.*$", "", nome, flags=re.IGNORECASE)
-    return nome.replace("-", " ").strip()
+    # Se o que veio da tabela for genérico (ex: apenas "Aperfeiçoamento"), usa o nome do arquivo
+    if not nome_encontrado or normalizar(nome_encontrado) in {"APERFEICOAMENTO", "QUALIFICACAO PROFISSIONAL", "ACAO EXTENSIVA"}:
+        nome_encontrado = caminho_pdf.stem.replace("-", " ").replace("_", " ")
+
+    # Corta metadados que às vezes vêm na mesma célula do nome do curso
+    nome_limpo = re.split(
+        r"\b(?:Habilita[çc][ãa]o|Tipo\s+d[eo]\s+Curso|Compet[êe]ncia|QTD\s+TOTAL|Segmento|Carga\s+Hor[áa]ria|Eixo)\b",
+        nome_encontrado,
+        maxsplit=1,
+        flags=re.IGNORECASE,
+    )[0]
+
+    nome_limpo = re.sub(r"[-–—]?\s*\b\d+\s*(?:horas?|hs?|h/a)\b", "", nome_limpo, flags=re.IGNORECASE)
+    if ano:
+        nome_limpo = re.sub(rf"[-–—]?\s*\b{ano}\b", "", nome_limpo)
+    nome_limpo = re.sub(r"\s+", " ", nome_limpo).strip(" -–—_\"“”'.")
+
+    return f"{nome_limpo} ({ano})" if ano else nome_limpo
 
 
 # ============================================================
@@ -196,7 +254,6 @@ def extrair_nome_curso(pdf, caminho_pdf: Path) -> str:
 # ============================================================
 
 TERMOS_PROIBIDOS_EXATOS = {
-    # Eletrodomésticos e Equipamentos
     "AR-CONDICIONADO", "AR CONDICIONADO", "COMPUTADOR", "MONITOR", "REFRIGERADOR",
     "FREEZER", "GELADEIRA", "FORNO", "FOGAO", "LIQUIDIFICADOR", "PROCESSADOR",
     "BATEDEIRA", "CAFETEIRA", "MICRO-ONDAS", "MICROONDAS", "COIFA", "EXAUSTOR",
@@ -212,7 +269,7 @@ TERMOS_PROIBIDOS_EXATOS = {
     "MODELADORA", "PLACA DE INDUCAO", "ULTRACONGELADOR", "FRIO RAPIDO",
     "DEFUMADOR", "DEFUMDOR", "DESIDRATADORA", "INFUSOR DE FUMACA", "BOMBA DE AQUARIO",
     "ENSACADOR MANUAL", "CARRINHO COM RODAS", "GUERIDON", "SMART TV", "NOTEBOOK",
-    # Utensílios e Ferramentas (singular + plural)
+    "CHURRASQUEIRA", "ADEGA", "CUTTER", "TRITURADOR DE ALIMENTOS",
     "PINCA", "PINCAS", "PEGADOR", "PEGADORES", "ROLO LAMINADOR", "CORTADOR", "CORTADORES",
     "ARO", "AROS", "PIRES", "PLACA DE CORTE", "PLACAS DE ETILENO", "PORTA CONDIMENTO",
     "POTE HERMETICO", "POTE BISNAGA", "BISNAGA", "RALADOR", "ZESTER",
@@ -221,26 +278,26 @@ TERMOS_PROIBIDOS_EXATOS = {
     "TESOURA", "TRAVESSA", "BOWL", "BOWLS", "BOWLL", "CAIXA PLASTICA", "CAIXA TERMICA",
     "CONTENTOR", "CHAIRA", "DESCASCADOR", "ESCUMADEIRA", "FOUET", "FUNIL",
     "MANDOLINE", "MANDOLIN", "MOEDOR", "PEDRA DE AFIAR", "ESPATULA", "PA PARA",
-    "GRADE", "FORMA", "FORMAS", "TABUA", "TABUAS", "FACA", "FACAS", "BARRA MAGNETICA",
-    "PANELA", "PANELAS", "FRIGIDEIRA", "CALDEIRAO", "ASSADEIRA", "TIGELA", "CUBA", "CUBAS",
-    "CONCHA", "ESCORREDOR", "PENEIRA", "COLHER", "COLHERES", "GARFO", "GARFOS",
-    "PRATO", "PRATOS", "COPO", "COPOS", "XICARA", "XICARAS", "TACA", "TACAS",
-    "JARRA", "TERMOMETRO", "BALANCA", "MEDIDOR", "MEDIDORES", "MEDIDORA",
-    "AZEITEIRO", "RECIPIENTE", "DISPENSADOR", "RAMEQUIN", "RAMEQUINS", "BACIA",
-    "MANDUCA", "ABRIDOR", "BORRIFADOR", "CHALEIRA", "BULE", "GALHETEIRO",
-    "BICO DE CONFEITAR", "BICOS PARA CONFEITAR", "ADAPTADOR", "BAILARINA",
+    "GRADE", "FORMA", "FORMAS", "FORMINHA", "FORMINHAS", "TABUA", "TABUAS", "FACA", "FACAS",
+    "BARRA MAGNETICA", "PANELA", "PANELAS", "FRIGIDEIRA", "CALDEIRAO", "ASSADEIRA",
+    "TIGELA", "CUBA", "CUBAS", "CONCHA", "ESCORREDOR", "PENEIRA", "COLHER", "COLHERES",
+    "GARFO", "GARFOS", "PRATO", "PRATOS", "COPO", "COPOS", "XICARA", "XICARAS",
+    "TACA", "TACAS", "JARRA", "TERMOMETRO", "BALANCA", "MEDIDOR", "MEDIDORES",
+    "MEDIDORA", "AZEITEIRO", "RECIPIENTE", "DISPENSADOR", "RAMEQUIN", "RAMEQUINS",
+    "BACIA", "MANDUCA", "ABRIDOR", "BORRIFADOR", "CHALEIRA", "BULE", "GALHETEIRO",
+    "BICO DE CONFEITAR", "BICOS PARA CONFEITAR", "BICO PITANGA", "ADAPTADOR", "BAILARINA",
     "BAILARINAS", "BAILHARINAS", "PINCEL CULINARIO", "ROLO DE MASSA",
     "CARRETILHA", "VAZADOR", "BOLEADOR", "DESCAROCADOR", "ESPREMEDOR", "AMASSADOR",
     "SOCADOR", "COQUETELEIRA", "DOSADOR", "MUDDLER", "PASSADOR", "CHINOIS",
     "TAMIS", "CUSCUZEIRA", "VAPOREIRA", "CHAPA", "GRELHA", "ESPETO", "GANCHO",
-    "BATEDOR MANUAL", "CUTELO", "RASPADOR", "CRONOMETRO", "REFIL GAS", "WOK",
-    "CANECA DE COBRE", "CESTO PARA PAES", "CLOCHE", "COADOR", "STRAINER", "DECANTER",
-    "GARRAFA TERMICA", "MACERADOR", "RECHAUD", "SOUSPLAT", "VACUO VINS",
+    "BATEDOR MANUAL", "BATEDOR ESPIRAL", "CUTELO", "RASPADOR", "CRONOMETRO", "REFIL GAS",
+    "WOK", "CANECA DE COBRE", "CESTO PARA PAES", "CLOCHE", "COADOR", "STRAINER",
+    "DECANTER", "GARRAFA TERMICA", "MACERADOR", "RECHAUD", "SOUSPLAT", "VACUO VINS",
     "JOGO AMERICANO", "PANO COBRE MANCHAS", "ARCO DE SERRA", "BAR CADDY",
     "CAVIAR BOX", "LICOREIRA", "MINI PITCHER", "MOLDE STENCIL", "PICOLETEIRA",
     "CUSPIDEIRA", "CHAWAM", "TACHO", "AEROPRESS", "AMPOLAS", "BISTURI", "LEITEIRA",
-    "MEXEDOR PARA DRINKS", "CORPO DE VIDRO",
-    # Limpeza, Higiene, Escritório, Descartáveis, Decoração não-comestível e EPIs
+    "MEXEDOR PARA DRINKS", "CORPO DE VIDRO", "PITCHER", "TAMPER", "BATE BORRA",
+    "SACARROLHA", "TORTEIRA", "GAZE",
     "FIBRA SINTETICA", "FIBRACO", "FOSFORO", "HIPOCLORITO", "MASCARA",
     "PANO MULTIUSO", "PANO DE PRATO", "PANO PARA LIMPEZA", "PAPEL ALUMINIO",
     "POTE COM TAMPA", "SACO PLASTICO", "SACO DE LIXO", "SABONETE", "TOUCA",
@@ -251,16 +308,15 @@ TERMOS_PROIBIDOS_EXATOS = {
     "JAPONA", "LUVA", "ESPONJA", "DETERGENTE", "DESINFETANTE", "VASSOURA",
     "RODO", "LIXEIRA", "FILME PVC", "PAPEL MANTEIGA", "PAPEL FILME", "GUARDANAPO",
     "PALITO DE BAMBU", "PALITODEBAMBU", "PALITO DE DENTE", "PALITO DE CHURRASCO",
-    "PALITO DE PIRULITO", "PAPEL CHUMBO", "ROLO DE FITILHO", "SACO TRANSPARENTE PARA PIRULITO",
-    "FOLHA DE TRANSFER", "ALGODAO", "BOBINA", "SACO DE CONFEITAR", "CERTIFICADO",
-    "ETIQUETA ADESIVA", "ETIQUETA", "MARMITEX", "EMBALAGEM", "CAIXA DE PAPELAO",
-    "BARBANTE", "ISQUEIRO", "CANETA", "LAPIS", "BORRACHA", "GRAMPEADOR",
-    "PRANCHETA", "PASTA", "CADERNO", "ESTOJO PERSONALIZADO", "FILTRO DE PAPEL",
-    "FILTROPAPELV60103", "FILTRO EMBUTIDO", "FILTRO KALITA", "CANUDO", "ISOPOR",
-    "TOPO DE BOLO", "PISTILO PARA ARTESANATO", "PISTILO PARA FLORES, CORES VARIADAS",
-    "VOAL", "PAPEL PARA IMPRESSAO", "LOUSA DE VIDRO MAGNETICA",
-    "MOLDURA TOUCH SCREEN", "SOUNDBAR", "PALITO GUARDA SOL DECORACAO",
-    # Móveis e Estruturas
+    "PALITO DE PIRULITO", "PALITO DE CANAPE", "PALITO GUARDA SOL", "PAPEL CHUMBO",
+    "ROLO DE FITILHO", "SACO TRANSPARENTE PARA PIRULITO", "FOLHA DE TRANSFER",
+    "ALGODAO", "BOBINA", "SACO DE CONFEITAR", "CERTIFICADO", "ETIQUETA ADESIVA",
+    "ETIQUETA", "MARMITEX", "EMBALAGEM", "CAIXA DE PAPELAO", "BARBANTE", "ISQUEIRO",
+    "CANETA", "LAPIS", "BORRACHA", "GRAMPEADOR", "PRANCHETA", "PASTA", "CADERNO",
+    "ESTOJO PERSONALIZADO", "FILTRO DE PAPEL", "FILTROPAPEL", "FILTROPAPELV60103",
+    "FILTRO EMBUTIDO", "FILTRO KALITA", "CANUDO", "ISOPOR", "TOPO DE BOLO",
+    "PISTILO PARA ARTESANATO", "PISTILO PARA FLORES", "VOAL", "PAPEL PARA IMPRESSAO",
+    "LOUSA DE VIDRO MAGNETICA", "MOLDURA TOUCH SCREEN", "SOUNDBAR", "LENHA",
     "BANCADA", "BANCADAS", "MESA", "CADEIRA", "ARMARIO", "CARTEIRA UNIVERSITARIA",
     "SOFTWARE", "EQUIPAMENTO", "UTENSILIO", "PENDAL"
 }
@@ -270,61 +326,69 @@ REGEX_MATERIAIS_E_MEDIDAS_UTENSILIO = re.compile(
     r"VIDRO TEMPERADO|CERAMICA|PORCELANA|LOUCA|MADEIRA|BAMBU|PLASTICO|PVC|TEFLON|"
     r"ANTIADERENTE|ACRILICO|NYLON|COBRE|110V|220V|127V|BIVOLT|WATTS|CM|MM|POLEGADAS|"
     r"MALHA FINA|CABO BRANCO|CABO PRETO|CABO VERMELHO|CABO VERDE|CABO AZUL|"
-    r"CABO AMARELO|DESCARTAVEL|OCUPACIONAL|ISOPOR|ARTESANATO|TRAMONTINA|METVISA|CISPER)\b"
+    r"CABO AMARELO|DESCARTAVEL|OCUPACIONAL|ISOPOR|ARTESANATO|TRAMONTINA|METVISA|CISPER|"
+    r"LAVAR LOUCAS|COMPRESSOR|PRATELEIRAS|ERGOMETRICA|EPOXI|ESTANHO|ESPUMA INJETADA|"
+    r"TAMPO SUPERIOR|FRIGORIFICA|EXAUSTAO)\b"
 )
 
 REGEX_SINAIS_ALIMENTO = re.compile(
     r"\b(?:ACUCAR|SAL|OLEO|AZEITE|FARINHA|FERMENTO|BICARBONATO|BICABORNATO|LEITE|"
     r"MANTEIGA|MARGARINA|CREME DE LEITE|NATA|QUEIJO|QUEJO|MOZZARELLA|MUCARELA|GORGONZOLA|"
-    r"FIOR DI LATTE|BURRATA|RICOTA|CHEDDAR|REQUEIJAO|CATUPIRY|PARMESAO|COALHO|PROVONE|"
-    r"OVO|OVOS|CARNE|FRANGO|PEIXE|CAMARAO|BACON|GUANCIALE|PANCETTA|LINGUICA|PRESUNTO|"
-    r"CHARQUE|ALCATRA|PATINHO|FILE|MIGNON|CONTRAFILE|COSTELA|COSTELINHA|LOMBO|PERNIL|"
-    r"BISTECA|CUPIM|MUSCULO|ACEM|PICANHA|MAMINHA|FRALDINHA|COXAO|LAGARTO|DIAFRAGMA|"
-    r"MIOLO DE ANCHO|PALETA DE CORDEIRO|MAGRET|PERU|ROBALO|TILAPIA|PESCADA|SARDINHA|ATUM|"
-    r"BACALHAU|POLVO|LULA|MEXILHAO|KANI KAMA|QUARTO TRASEIRO|QUARTO DIANTEIRO|PONTA DE AGULHA|"
-    r"COELHO|GALETO|SUINO|CORDEIRO|CABRITO|DAMASCO|ESCAROLA|REFRIGERANTE|ABSINTO|SAKE|SOJU|"
-    r"PISCO|FERNET|BRANDY|GRAPPA|COGNAC|GINGER ALE|TIQUIRA|OUZO|ST GERMAIN|ARAK|"
-    r"PALETA|TENDER|FIGO|FIGOS|CEREJA|CEREJAS|BATATA|BATATAS|CEBOLA|CEBOLAS|ALHO|ALHOS|"
-    r"SALSAO|ADOCANTE|XILITOL|GIN|AMARO|ANGOSTURA|CACACA|PLYMOUTH|REDESTILADO|LONDON DRY|"
-    r"FRANGELICO|TEQUILA|AGAVE|VINHO|VINHOS|BIODINAMICOS|LINGUADO|FIGADO|CORACAO DE BOI|"
-    r"BANHA|SALAME|SALMAO|ACELGA|NABO|NIRA|PAK CHOI|SHARI|ANIS ESTRELADO|DENDE|CHEIRO VERDE|"
-    r"COENTRO|COLORAU|COMINHO|LOURO|LEITE DE COCO|PALMITO|CAPIM SANTO|CARA|MAJERICAO|"
-    r"CEVADA|SEMOLINA|AMORA|AMORAS|ERVA CIDREIRA|CEBOLETE|"
-    r"ARROZ|FEIJAO|MACARRAO|SPAGHETTI|MASSA|FUBA|AMIDO|POLVILHO|AVEIA|TRIGO|MILHO|MIIHO|"
-    r"CANJICA|CUSCUZ|SOJA|TOFU|LENTILHA|GRAO DE BICO|QUINOA|"
-    r"TOMATE|CEBOLA|ALHO|BATATA|CENOURA|BETERRABA|ABOBORA|ABOBRINHA|MANDIOCA|AIPIM|INHAME|"
-    r"PIMENTAO|ALFACE|COUVE|REPOLHO|ESPINAFRE|RUCULA|AGRIAO|CHICORIA|BROCOLIS|COUVE-FLOR|"
-    r"BERINJELA|CHUCHU|QUIABO|VAGEM|PEPINO|RABANETE|ASPARGO|CHEIRO VERDE|COENTRO|SALSA|"
-    r"SALSINHA|CEBOLINHA|CEBOULLETE|HORTELA|MANJERICAO|ALFAVACA|ALECRIM|TOMILHO|OREGANO|"
-    r"LOURO|ENDRO|DILL|CANELA|CRAVO|PIMENTA|COMINHO|CURCUMA|ACAFRAO|COLORAU|PAPRICA|"
-    r"NOZ MOSCADA|GENGIBRE|BAUNILHA|ESSENCIA|CORANTE|CMC|CARBOXIMETILCELULOSE|"
-    r"LIGA NEUTRA|DESMOLDANTE|SUMAGRE|SUMAC|CUMARU|CARDAMOMO|ERVA DOCE|ERVAS|"
-    r"BANANA|MACA|LARANJA|LIMAO|LIMAOSICILIANO|ABACAXI|ABACAXIPEROLA|MAMAO|MANGA|MORANGO|"
-    r"UVA|MARACUJA|COCO|MELANCIA|MELAO|ABACATE|AVOCADO|GOIABA|GOIABADA|PESSEGO|AMEIXA|"
-    r"CAJU|ACEROLA|TANGERINA|MEXERICA|KIWI|CEREJA|AMARENA|FRAMBOESA|AMORA|MIRTILO|MIRTILOS|"
-    r"PEQUI|POLPA|CHOCOLATE|CACAU|MEL|MELADO|GLICOSE|GELATINA|CHANTILLY|DOCE DE LEITE|"
+    r"FIOR DI LATTE|BURRATA|RICOTA|CHEDDAR|REQUEIJAO|CATUPIRY|PARMESAO|COALHO|PROVOLONE|"
+    r"OVO|OVOS|GEMA|GEMAS|CLARA|CLARAS|CARNE|FRANGO|GALINHA|PEIXE|CAMARAO|CAMAROES|"
+    r"BACON|GUANCIALE|PANCETTA|LINGUICA|PRESUNTO|CHARQUE|ALCATRA|PATINHO|FILE|MIGNON|"
+    r"CONTRAFILE|COSTELA|COSTELINHA|LOMBO|PERNIL|BISTECA|CUPIM|MUSCULO|ACEM|PICANHA|"
+    r"MAMINHA|FRALDINHA|COXAO|LAGARTO|DIAFRAGMA|MIOLO DE ANCHO|PALETA DE CORDEIRO|"
+    r"MAGRET|PERU|ROBALO|TILAPIA|PESCADA|SARDINHA|ATUM|BACALHAU|POLVO|LULA|MEXILHAO|"
+    r"KANI KAMA|QUARTO TRASEIRO|QUARTO DIANTEIRO|PONTA DE AGULHA|COELHO|GALETO|SUINO|"
+    r"CORDEIRO|CABRITO|T-BONE|TAMBAQUI|TAMBAQUEI|RA INTEIRA|TRIPA|DAMASCO|ESCAROLA|"
+    r"REFRIGERANTE|ABSINTO|SAKE|SAQUE|SOJU|PISCO|FERNET|BRANDY|GRAPPA|COGNAC|GINGER ALE|"
+    r"TIQUIRA|OUZO|ST GERMAIN|ARAK|PALETA|TENDER|FIGO|FIGOS|CEREJA|CEREJAS|BATATA|BATATAS|"
+    r"CEBOLA|CEBOLAS|ALHO|ALHOS|SALSAO|ADOCANTE|XILITOL|GIN|AMARO|ANGOSTURA|CACHACA|"
+    r"PLYMOUTH|REDESTILADO|LONDON DRY|FRANGELICO|TEQUILA|AGAVE|VINHO|VINHOS|LINGUADO|"
+    r"FIGADO|CORACAO DE BOI|BANHA|SALAME|SALMAO|ACELGA|NABO|NIRA|PAK CHOI|SHARI|"
+    r"ANIS|ESTRELADO|DENDE|CHEIRO VERDE|COENTRO|COLORAU|COMINHO|LOURO|LEITE DE COCO|"
+    r"PALMITO|CAPIM SANTO|CARA|MANJERICAO|MAJERICAO|CEVADA|SEMOLINA|AMORA|AMORAS|"
+    r"ERVA CIDREIRA|CEBOLETE|CIBOULETTE|CEBOULLETE|GROSELHA|CASSIS|GRENADINE|"
+    r"ARROZ|FEIJAO|MACARRAO|SPAGHETTI|MASSA|FUBA|AMIDO|POLVILHO|AVEIA|TRIGO|MILHO|"
+    r"CANJICA|CUSCUZ|SOJA|TOFU|LENTILHA|GRAO DE BICO|QUINOA|ALCACHOFRA|BROTO|ALFAFA|"
+    r"TOMATE|CENOURA|BETERRABA|ABOBORA|ABOBRINHA|MANDIOCA|AIPIM|INHAME|PIMENTAO|"
+    r"ALFACE|COUVE|REPOLHO|ESPINAFRE|RUCULA|AGRIAO|CHICORIA|BROCOLIS|COUVE-FLOR|"
+    r"BERINJELA|CHUCHU|QUIABO|VAGEM|PEPINO|RABANETE|ASPARGO|SALSA|SALSINHA|CEBOLINHA|"
+    r"HORTELA|ALFAVACA|ALECRIM|TOMILHO|OREGANO|ENDRO|DILL|CANELA|CRAVO|PIMENTA|"
+    r"CURCUMA|ACAFRAO|PAPRICA|NOZ MOSCADA|GENGIBRE|BAUNILHA|ESSENCIA|CORANTE|CMC|"
+    r"CARBOXIMETILCELULOSE|LIGA NEUTRA|DESMOLDANTE|SUMAGRE|SUMAC|CUMARU|CARDAMOMO|"
+    r"ERVA DOCE|ERVAS|CREME TARTARO|GLUTAMATO|FUMAÇA LIQUIDA|FUMACA LIQUIDA|"
+    r"BANANA|MACA|LARANJA|LIMAO|ABACAXI|MAMAO|MANGA|MORANGO|UVA|MARACUJA|COCO|"
+    r"MELANCIA|MELAO|ABACATE|AVOCADO|GOIABA|GOIABADA|PESSEGO|AMEIXA|CAJU|ACEROLA|"
+    r"TANGERINA|MEXERICA|KIWI|AMARENA|FRAMBOESA|MIRTILO|MIRTILOS|PEQUI|POLPA|"
+    r"CHOCOLATE|CACAU|MEL|MELADO|GLICOSE|GELATINA|CHANTILLY|DOCE DE LEITE|"
     r"LEITE CONDENSADO|BOMBOM|GRANULADO|SORVETE|PO DOURADO|PO PEROLADO|PO COBRE|"
-    r"FOLHAS DE OURO|FLOR COMESTIVEL|VINAGRE|ACETO|SHOYU|MOSTARDA|MOSTARDAAMARELAEMGRAOS|"
-    r"KETCHUP|MAIONESE|EXTRATO DE TOMATE|MOLHO|CREME BALSAMICO|AZEITONA|AZEITONAS|"
-    r"AZEITONASPRETASSEMCAROCO|AZEITONASVERDESEMCAROCO|ALCAPARRA|ALCAPARRAS|CHAMPIGNON|"
-    r"COGUMELO|FUNGHI|PALMITO|ERVILHA|ERVILHAS|VINHO|ESPUMANTE|CERVEJA|CACHACA|RUM|"
-    r"CONHAQUE|LICOR|APEROL|BITTER|CAMPARI|TEQUILA|VERMOUTH|VERMUTE|VODKA|WHISKY|WHISKEY|"
-    r"XAROPE|SUCO|CAFE|CHA|AGUA|GELO|PAO|TORRADA|BISCOITO|BOLACHA|CASTANHA|NOZES|"
-    r"AMENDOA|AMENDOIM|AVELA|PISTACHE|UVA PASSA|FRUTOS SECOS|CURRY|IN NATURA|"
-    r"CONGELAD[OA]|RESFRIAD[OA]|TIPO 1|SEM SAL|COM SAL|INTEGRAL|DESNATAD[OA]|MOID[OA]|"
+    r"FOLHAS DE OURO|FLOR COMESTIVEL|VINAGRE|ACETO|SHOYU|MOSTARDA|KETCHUP|MAIONESE|"
+    r"EXTRATO DE TOMATE|MOLHO|CREME BALSAMICO|AZEITONA|AZEITONAS|ALCAPARRA|ALCAPARRAS|"
+    r"CHAMPIGNON|COGUMELO|FUNGHI|ERVILHA|ERVILHAS|ESPUMANTE|CERVEJA|RUM|CONHAQUE|"
+    r"LICOR|APEROL|BITTER|CAMPARI|VERMOUTH|VERMUTE|VODKA|WHISKY|WHISKEY|XAROPE|SUCO|"
+    r"CAFE|CHA|AGUA|GELO|PAO|BAGUETE|TORRADA|BISCOITO|BOLACHA|CASTANHA|NOZES|"
+    r"AMENDOA|AMENDOAS|AMENDOIM|AVELA|PISTACHE|UVA PASSA|FRUTOS SECOS|CURRY|"
+    r"MIREPOIX|ROUX|FUNDO DE LEGUMES|SACHET|TEMPERO|ALCOOL DE CEREAIS|"
+    r"IN NATURA|CONGELAD[OA]|RESFRIAD[OA]|SEM SAL|COM SAL|INTEGRAL|DESNATAD[OA]|MOID[OA]|"
     r"RALAD[OA]|FATIAD[OA]|EM PO|EM GRAO|EXTRA VIRGEM|REFINAD[OA]|CRISTAL|DEMERARA|COMESTIVEL)\b"
 )
 
 CABECALHOS_E_SECOES = {
-    "CODIGO ITEM MXM", "DESCRICAO/ESPECIFICACAO DETALHADA", "DESCRICAO",
-    "DESCRICAO DETALHADA", "DESCRICAO DO", "DETALHADA",
-    "ESPECIFICACAO", "U.M", "QUANTIDADE POR ALUNO", "QUANTIDADE POR TURMA",
-    "VALOR UNITARIO", "VALOR TOTAL", "TOTAL", "PESO", "APROXIMADO DE",
-    "TIPO DE FINANCIAMENTO", "INSUMOS", "MIDIA ESPECIALIZADA", "BANCO DE PRECOS",
-    "ESTIMATIVA", "UNIFORMES", "MODO DE PREPARO", "INFRAESTRUTURA E LISTA BASICA1",
+    "CODIGO ITEM MXM", "CODIGO MXM", "CODIGO DO MXM", "CODIGO DO SEI",
+    "DESCRICAO/ESPECIFICACAO DETALHADA", "DESCRICAO/ESPECIFI CACAO DETALHADA",
+    "DESCRICAO/ESPECIFIC ACAO DETALHADA", "DESCR ICAO/",
+    "DESCRICAO", "DESCRICAO DETALHADA", "DESCRICAO DO", "DESCRICAO DO REQUISITO",
+    "DETALHADA", "ESPECIFICACAO", "ESPECIFICACOES",
+    "U.M", "U MEDIDA", "QUANTIDADE POR ALUNO", "QUANTIDADE POR TURMA",
+    "QUANTIDADE TOTAL DE ALUNOS", "TOTAL DE ALUNOS", "VALOR UNITARIO", "VALOR UNITARI",
+    "VALOR TOTAL", "TOTAL", "PESO", "APROXIMADO DE", "TIPO DE FINANCIAMENTO",
+    "INSUMOS", "MIDIA ESPECIALIZADA", "BANCO DE PRECOS", "ESTIMATIVA",
+    "UNIFORMES", "MODO DE PREPARO", "INFRAESTRUTURA E LISTA BASICA1",
     "INFRAESTRUTURA E LISTA BASICA", "INDICADORES", "LISTA BASICA",
     "DADOS DA LISTA BASICA", "DADOS DO CURSO", "QUALIFICACAO PROFISSIONAL",
-    "ULTIMA REVISAO", "UNIFORME", "DESCRICAO DO INGREDIENTE", "ITEM",
+    "ULTIMA REVISAO", "UNIFORME", "DESCRICAO DO INGREDIENTE", "ITEM", "ITE M",
     "QUANTIDADE", "MEDIDA", "CATEGORIA", "NAO SE APLICA", "SENAC", "UNIDADE",
     "PACOTE", "CAIXA", "LATA", "VIDRO", "GARRAFA", "MACO", "RESMA", "FARDO",
     "POTE", "ROLO", "QTD TOTAL DE ALUNOS", "RESPONSAVEL- ELABORACAO",
@@ -333,65 +397,21 @@ CABECALHOS_E_SECOES = {
     "AULAS PLANEJADAS", "PLANEJAMENTO DAS AULAS", "LANCAMENTO NO SEI",
     "PRODUCAO DE ALIMENTOS", "PROGRAMA SOCIOPROFISSIONAL",
     "HABILITACAO PROFISSIONAL TECNICA DE NIVEL MEDIO", "UNIDADE CURRICULAR",
-    "UNIDADE(S) CURRICULAR(ES)", "UC", "CURSO", "DOCENTE",
-    "PLANO DE TRABALHO DOCENTE – SENAC DF", "PLANO DE TRABALHO DOCENTE - SENAC DF",
-    "GARDE MANGER", "SITUACAO DE APRENDIZAGEM", "INTRODUCAO AO PI",
-    "DESENVOLVIMENTO DE SOLUCOES", "FICHA TECNICA DE PRODUCAO",
-    "PRATICAS OPERACIONAIS EM NUTRICAO E DIETETICA",
-    "PREPARO DE ALIMENTOS SEM GLUTEN", "COORDENACAO PEDAGOGICA",
+    "UNIDADE(S) CURRICULAR(ES)", "UC", "UC/CH CURSO", "TURMA", "CURSO",
+    "DOCENTE", "PLANO DE TRABALHO DOCENTE", "SITUACAO DE APRENDIZAGEM",
+    "FICHA TECNICA DE PRODUCAO", "COORDENACAO PEDAGOGICA",
     "EIXO/SEGMENTO TECNOLOGICO", "WWW.DF.SENAC.BR", "HTTPS", "HTTP",
-    "SERVICO NACIONAL DE APRENDIZAGEM COMERCIAL-SENAC",
-    "NACIONAL DE APRENDIZAGEM COMERCIAL-SENAC",
-    "DEPARTAMENTO REGIONAL SENAC DISTRITO FEDERAL",
-    "DEPARTAMENTO REGIONAL SENAC DISTRITO FEDERAL DIRETORIA",
-    "1. DETALHAMENTO DA(S) UNIDADE(S) CURRICULAR(ES)",
-    "UNIDADE(S) CURRICULAR(ES) CARGA HORARIA",
-    "UNIDADE(S) CURRICULAR(ES) HORARIA",
-    "DESCRICAO DO REQUISITO",
-    "ITEM DESCRICAO DO INGREDIENTE QUANTID UNIDADE",
-    "ITEM DESCRICAO DO INGREDIENTE QUANTIDADE UNIDADE",
-    "QUANTID",
-    "QUANTID ADE",
-    "QUANTIDA",
-    "QUANTIDA DE",
-    "QUANTIDAD E",
-    "UNIDADE DE",
-    "UNIDADE DE MEDIDA",
-    "UNIDADES",
-    "UNIDADE EDUCACIONAL",
-    "RECURSO FINANCEIRO",
-    "VOLTAGEM",
-    "QUADRO",
-    "APROX",
-    "APROXIMADAMENTE",
-    "MINIMA",
-    "SITUACAO PROBLEMA",
-    "DRINKS NAO ALCOOLICOS",
-    "SENAC DF, 2011",
-    "RECURSOS",
-    "PERIODO",
-    "CORES",
-    "CONTENDO",
-    "ADICIONAIS",
-    "DUE DE",
-    "GRAMA A",
-    "PAULO",
-    "EAD SENAC",
-    "REDE EAD SENAC",
-    "VISITA A UMA CONFEITARIA",
-    "LEGISLACAO E PROCEDIMENTOS",
-    "DOIS TEMPOS",
-    "8 PODENDO CONTER",
-    "13 COR",
-    "ELABORACAO - RESPONSAVEL",
-    "ELABORACAO – RESPONSAVEL",
-    "UNIDADE DE • APLICAR BOAS",
-    "COM O SENAC CEARA)",
-    "SUAS RECEITAS. RIO DE JANEIRO",
-    "APERFEICOAMENTO DE TORTAS DOCES E SALGADAS",
-    "ATUACAO DO CONSULTOR NA AREA DE SEGURANCA DOS ALIMENTOS",
-    "CAKE DESIGN",
-    "CAKE DESIGN - APERFEICOAMENTO",
+    "UNIDADE DE MEDIDA", "UNIDADE DE MEDIDIA", "UNIDADES", "UNIDADE EDUCACIONAL",
+    "QUANTID", "QUANTIDA", "QUANTIDAD E", "RECURSO FINANCEIRO", "VOLTAGEM", "QUADRO",
+    "APROX", "APROXIMADAMENTE", "APROXIMADAS", "MINIMA", "VOLUME MINIMO",
+    "SITUACAO PROBLEMA", "RECURSOS", "PERIODO", "CORES", "CONTENDO", "ADICIONAIS",
+    "EAD SENAC", "REDE EAD SENAC", "EA D SENAC", "CARACTERISTICAS", "ESCRITA",
+    "MOAGEM", "PORCOES INDIVIDUAIS", "NAO ATENDIDO", "METODO 1", "METODO 2",
+    "METODO DIRETO RAPIDO", "METODO CESTINHA", "ALQUIMIA DOS ALIMENTOS",
+    "SABORES DO BRASIL", "CORTES ARGENTINOS", "PADRAO LAGUNA", "LAGUNA",
+    "LARGURA", "CONSUMO", "CAPACIDADE", "MEDIDAS", "BRUTO", "EDUCACIONAL",
+    "NUMERO DE PAGINAS", "NUMERO MAXIMO DE VAGAS", "TURNO / HORARIO",
+    "SENSIBILIDADE DE", "DOIS TEMPOS", "TEMPOS", "COR", "PAULO", "DUE DE"
 }
 
 PADROES_RUIDO_REGEX = [
@@ -402,45 +422,28 @@ PADROES_RUIDO_REGEX = [
     r"^\d+\s*ALUNOS?$",
     r"^UC\s*\d+",
     r"^\d+\s+UNIDADE$",
-    r"\bSAL\s+DE\s+CURA\b",
-    r"\bBRUTO\b",
-    r"\bUND\b",
+    r"\bUNI\s+\d+\b",
+    r"\bUNIDADE\s+\d+\b",
     r"R\$\s*\d+",
+    r"\bCURRICULAR\b",
     r"\bINFRAESTRUTURA E LISTA BASICA\b|\bANO/ATUALIZACAO/VERSAO\b",
-    r"\bAPLICAR BOAS\b|\bCOMPETENCIAS?\b|\bCRITERIOS?\b",
+    r"\bAPLICAR BOAS\b|\bCOMPETENCIAS?\b|\bCRITERIOS?\b|\bMENCOES ADOTADAS\b",
     r"\bELABORACAO\s*[-–—]\s*RESPONSAVEL\b|\bELABORACAO/ATUALIZACAO\b",
-    r"\bSIMILAR OU SUPERIOR\b|\bA MARCA\b",
-    r"\bUNIDADE(?:\s+\d+)?\s+SENAC\b",
-    r"\bMEDIDA\s+\d+X\d+\b|\bFORMATO\b",
-    r"\bPRECISAO ELETRONICA\b|\b1 GRAMA A\b|\bDE 1 GRAMA A\b",
-    r"\bPECA INTEIRA\s*\(CABECA\)\b",
-    r"^\d+\s+APROXIMADAS?$",
-    r"^\d+\s+LAGUNA$|,\s*PADRAO LAGUNA\b",
-    r"\bCAPACIDADE\s+APROXIMADAMENTE?\b|\bMEDIDAS?\s+APROXIMADAS?\b|\bDIMENSOES\b",
-    r"\bXADREZ\b|\bTAMANHO\s+\d+\s+AO\b|\bCORDÃO\b|\bESPUMA INJETADA\b|\bTAMPO SUPERIOR\b",
-    r"\bTELA\s+EM\s+TULE\b|\bPOLIESTER\b|\bTAMANHO\s+UNICO\b",
-    r"\bDE\s+MEDIDA\b|\bMETODO\s+CESTINHA\b|\bPARA\s+ESTE\s+PREPARO\b",
-    r"\bPEDAGOGICOS\s+DO\s+SENAC\b|\bREDE\s+EAD\s+SENAC\b|\bINFRAESTRUTURA\s+DE\s+COZINHA\b|\bNAO\s+ATENDIDO\b",
-    r"\bTEMPOS\b",
-    r"\b(?:COZINHE|BATA|MISTURE|ADICIONE|RESERVE|HIGIENIZE|PENEIRE|MISTURAR|MEXA|LEVE AO FORNO|CORTE EM|DESCASQUE|REFOGUE|DEIXE DESCANSAR)\b",
-    r"\b(?:ATIVIDADE PRATICA|ATIVIDADE TEORICA|VISITA TECNICA|UNIDADE CURRICULAR|SITUACAO DE APRENDIZAGEM|ESPACO PRIVILEGIADO|PERGUNTAS OBJETIVAS|DESENVOLVIMENTO DO PI)\b",
-    r"\b(?:SAO PAULO|ED\.|EDITORA|CHEF PROFISSIONAL)\b",
-    r"\b(?:HTTPS?|WWW\.|SENAC\.BR|AUTENTICIDADE DO DOCUMENTO|COORDENACAO PEDAGOGICA|EIXO/SEGMENTO)\b",
-    r"\b(?:VENDIDO POR UNIDADE|NAO SE APLICA|R\$|VARIACAO DE \d+%|INSTALACAO A CARGO)\b",
-    r"\b(?:UNI|UND)\s+\d+\s+(?:SENAC|R\$)\b",
-    r"\b(?:DEPARTAMENTO REGIONAL SENAC|SERVICO NACIONAL DE APRENDIZAGEM|PROGRAMA SENAC DE GRATUIDADE|MARCAS FORMATIVAS)\b",
-    r"\b(?:VARIACAO DE \d+%|DIMENSOES MINIMAS|MEDIDAS MINIMAS|LAMINA EM FIO LISO|LARGURA X PROFUNDIDADE|ALIMENTACAO TENSAO|VOLUME MINIMO|CONSUMO|PESO|LARGURA|COMPRIMENTO)\b",
-    r"\b(?:MAQUINA DE LAVAR LOUCAS|VENDIDO POR UNIDADE|GARANTIA NO COMPRESSOR|ACABAMENTO METALIZADO|ERGOMETRICA|MOLDURA PELICULA|TINTA NAO RECARREGAVEL|CONFIGURACAO MINIMA)\b",
-    r"\b(?:SENAC SP\.|SENAC DEPARTAMENTO NACIONAL|RIO DE JANEIRO|EMB\.|REIMP\.|RESPONSA?VEL PELO DESENVOLVIMENTO)\b",
-    r"\b(?:DO PRODUTO\.|CONTENDO|TRANSPARENTE CONTENDO|COR BRANCA, CONTENDO|PACOTE COM|GARRAFA DE)\b",
-    r"\b(?:UNIDADE\.\s*\d+|\d+\s+APROX\b|TOTAL\s+R\$|UND\s+\d+\s+R\$)\b",
-    r"\b[A-ZÁÉÍÓÚÂÊÔÃÕ]{3,},\s*[A-Z]\.",
-    r"\bSEGURANCA NA MANIPULACAO DOS ALIMENTOS\b",
-    r"\bSENAC\s+SAO(?:\s+PAULO)?\b",
-    r"\bAJUDAM NA ROTINA\b|\bESTABELECIMENT\s*OS\b|\bPRODUTOS CARNEOS\b",
-    r"\bTENSAO\b|\bCOM O SENAC\b|\bTRANSPARENTE OU BRANCO\b|\bPECA INTEIRA\s*\(CABECA\)\b",
-    r"\bPRODUCAO E AS ALIMENTACAO\b|\bCOMPETICAO DE CHEFS\b|\bCONTEXTO\b",
-    r"\bVIDRO OU MATERIAL DURAVEL\b|\bFILTRO EMBUTIDO\b|\bCORPO DE VIDRO\b|\bPODENDO CONTER\b|\bSUAS RECEITAS\b",
+    r"\bSIMILAR OU SUPERIOR\b|\bA MARCA\b|\bLOGOMARCA DA INSTITUICAO\b",
+    r"\bUNIDADE(?:\s+\d+)?\s+SENAC\b|\bIMPRESSAO SENAC\b|\bFORMATIVAS\b|\bSENAC\b",
+    r"\bMEDIDA\s+\d+X\d+\b|\bFORMATO\b|\bTAMANHO\s+\d+\b|\bTAMANHO UNICO\b",
+    r"\bPRECISAO ELETRONICA\b|\b1 GRAMA A\b|\bDE 1 GRAMA A\b|\bGRAMA A\b",
+    r"\bCAPACIDADE\b|\bMEDIDAS?\s+APROXIMADAS?\b|\bDIMENSOES\b|\bCOMPRIMENTO\b",
+    r"\bALTURA\b|\bPROFUNDIDADE\b|\bTENSAO\b|\bVOLTAGEM\b|\bREVESTIMENTO\b",
+    r"\bTRANSPARENTE OU BRANCO\b|\bPONTA FINA\b|\bAQUECIMENTO RAPIDO\b|\bVEDACAO\b",
+    r"\b(?:COZINHE|BATA|MISTURE|ADICIONE|RESERVE|HIGIENIZE|PENEIRE|MISTURAR|MEXA|LEVE AO FORNO|CORTE EM|DESCASQUE|REFOGUE|DEIXE DESCANSAR|RETIRAR A PECA|MONTAR ESTA CAIXA|PREPARAR OS FILES|FINZALIZAR|FINALIZAR)\b",
+    r"\b(?:ATIVIDADE PRATICA|ATIVIDADE TEORICA|VISITA TECNICA|SITUACAO DE APRENDIZAGEM|PLANO DE TRABALHO|DESENVOLVIMENTO DE SOLUCOES|INTRODUCAO AO PI|PLANO DE NEGOCIO|ORGANIZA E HIGIENIZA|ORGANIZACAO E ESTRUTURA)\b",
+    r"\b(?:HTTPS?|WWW\.|AUTENTICIDADE DO DOCUMENTO|COORDENACAO PEDAGOGICA|EIXO/SEGMENTO|DEPARTAMENTO REGIONAL)\b",
+    r"\b(?:VENDIDO POR UNIDADE|NAO SE APLICA|VARIACAO DE \d+%|INSTALACAO A CARGO|VALIDADE MINIMA|DATA DA ENTREGA)\b",
+    r"\b(?:SERVICO NACIONAL DE APRENDIZAGEM|APRENDIZAGEM COMERCIAL|RESTAURANTE-ESCOLA)\b",
+    r"\b(?:SAO PAULO|RIO DE JANEIRO|FORTALEZA|CEARA|ED\.|EDICAO|REIMP\.|EDITORA|CHEF PROFISSIONAL|SOU COZINHEIRO|SOU BARISTA|TECNOLOGIAS GERENCIAIS|COZINHAS PROFISSIONAIS|ALIMENTOS SEGUROS|MANUAL PRATICO)\b",
+    r"\b[A-Z]{3,},\s*[A-Z]\.",
+    r"\bPLATAFORMA CACHOLA\b|\bANUARIO DE TECNOLOGIAS\b|\bMAPEAMENTO DE TECNOLOGIAS\b",
 ]
 
 
@@ -450,10 +453,7 @@ def classificar_item(titulo_insumo: str, vocabulario_receitas: set[str]) -> str:
 
     desc_upper = normalizar(titulo_insumo)
 
-    if len(desc_upper) < 3:
-        return "DESCARTAR"
-
-    if not re.search(r"[A-Z]", desc_upper):
+    if len(desc_upper) < 3 or not re.search(r"[A-Z]", desc_upper):
         return "DESCARTAR"
 
     if re.fullmatch(r"[\d\s.,/R$-]+", desc_upper):
@@ -473,34 +473,18 @@ def classificar_item(titulo_insumo: str, vocabulario_receitas: set[str]) -> str:
         return "DESCARTAR"
 
     excecoes_validas = {
-        "QUARTO TRASEIRO",
-        "QUARTO DIANTEIRO",
-        "PONTA DE AGULHA",
-        "MEIA CARCACA",
-        "CARCACA DE FRANGO",
-        "PAO DE FORMA",
-        "MASSA PARA PASTEL EM ROLO",
-        "BANANA PRATA",
-        "COXA COM SOBRE COXA",
-        "SUINO INTEIRO",
-        "GALETO INTEIRO",
-        "SUINO ADULTO",
-        "FRUTAS DAMASCO SECO",
-        "FIGOS FRESCOS",
-        "CEREJAS COM CABO",
-        "BATATAS GRANDES – CORTADAS EM RODELAS",
-        "CEBOLAS GRANDES CORTADAS EM RODELAS FINAS",
-        "ALHOS AMASSADOS",
-        "TENDER BOLINHA – APROXIMADAMENTE 1,5 KG",
+        "QUARTO TRASEIRO", "QUARTO DIANTEIRO", "PONTA DE AGULHA",
+        "MEIA CARCACA", "CARCACA DE FRANGO", "PAO DE FORMA",
+        "MASSA PARA PASTEL EM ROLO", "BANANA PRATA", "COXA COM SOBRE COXA",
+        "SUINO INTEIRO", "GALETO INTEIRO", "SUINO ADULTO", "SAL DE CURA",
+        "TRIPA DE PORCO PARA EMBUTIDO", "ALCOOL DE CEREAIS", "CREME TARTARO"
     }
     if any(exc in desc_upper for exc in excecoes_validas):
         return "INSUMO_CONFIRMADO"
 
-    # 1. Bloqueio por material/dimensão típica de utensílio/equipamento
     if REGEX_MATERIAIS_E_MEDIDAS_UTENSILIO.search(desc_upper):
         return "DESCARTAR"
 
-    # 2. Bloqueio por lista negra de utensílios/equipamentos/limpeza
     palavras_titulo = set(re.findall(r"[A-Z0-9-]+", desc_upper))
     for termo in TERMOS_PROIBIDOS_EXATOS:
         if " " in termo:
@@ -510,17 +494,25 @@ def classificar_item(titulo_insumo: str, vocabulario_receitas: set[str]) -> str:
             if termo in palavras_titulo:
                 return "DESCARTAR"
 
-    # 3. Confirmação positiva: está nas fichas técnicas OU tem radical culinário
     if desc_upper in vocabulario_receitas or REGEX_SINAIS_ALIMENTO.search(desc_upper):
         return "INSUMO_CONFIRMADO"
 
-    # 4. Zona cinzenta
     return "SUSPEITO"
 
 
 # ============================================================
 # 4. EXTRAÇÃO DAS TABELAS E FICHAS TÉCNICAS
 # ============================================================
+
+CONFIG_TABELAS_BLINDADA = {
+    "vertical_strategy": "lines",
+    "horizontal_strategy": "lines",
+    "snap_tolerance": 3,
+    "join_tolerance": 3,
+    "text_x_tolerance": 1.2,
+    "text_y_tolerance": 2,
+}
+
 
 def identificar_indice_coluna_descricao(cabecalho_linha: list[str]) -> int | None:
     for idx, celula in enumerate(cabecalho_linha):
@@ -542,31 +534,21 @@ def tabela_e_de_metadados_ou_cronograma(tabela: list[list[str]]) -> bool:
     ))
     marcadores_nao_insumo = [
         "QTD TOTAL DE ALUNOS", "DADOS DO CURSO", "PLANEJAMENTO DAS AULAS",
-        "AULAS PLANEJADAS", "MODO DE PREPARO", "ELEMENTOS DA COMPETENCIA",
+        "AULAS PLANEJADAS", "ELEMENTOS DA COMPETENCIA",
         "ORGANIZACAO CURRICULAR", "BIBLIOGRAFIA", "SITUACAO DE APRENDIZAGEM"
     ]
     return any(m in amostra for m in marcadores_nao_insumo)
 
 
-def linha_parece_item_valido(valores: list[str], modo_ficha_aula: bool) -> bool:
-    texto_completo = normalizar(" ".join(v for v in valores if v))
+def extrair_melhor_candidato_descricao(valores: list[str], idx_preferencial: int | None = None) -> str:
+    if idx_preferencial is not None and idx_preferencial < len(valores):
+        val_pref = valores[idx_preferencial]
+        if val_pref and len(normalizar(val_pref)) >= 3:
+            return val_pref
 
-    if modo_ficha_aula:
-        tem_numero = any(re.fullmatch(r"\d+(?:[.,]\d+)?", v.strip()) for v in valores if v)
-        tem_unidade = bool(re.search(r"\b(?:G|GR|KG|ML|L|UN|UNID|UNIDADE|PCT|CX|LATA|DENTE|FOLHA|MACO|COLHER|XICARA|Q\.?B\.?|A GOSTO)\b", texto_completo))
-        return tem_numero or tem_unidade
-    else:
-        marcadores_lista_basica = (
-            r"\b(?:KG|UNIDADE|UNI|PACOTE|PCT|CAIXA|CX|LATA|VIDRO|GARRAFA|MACO|MC|FARDO|POTE|ROLO|RL|"
-            r"LITRO|PECA|BANDEJA|NAO SE APLICA|SENAC|MIDIA ESPECIALIZADA|BANCO DE PRECOS|ESTIMATIVA)\b|R\$|ES0"
-        )
-        return bool(re.search(marcadores_lista_basica, texto_completo))
-
-
-def extrair_melhor_candidato_descricao(valores: list[str]) -> str:
     ignorados = CABECALHOS_E_SECOES | {
         "NAO SE APLICA", "SENAC", "MIDIA ESPECIALIZADA", "BANCO DE PRECOS", "ESTIMATIVA",
-        "KG", "UNI", "PCT", "MC", "CX", "RL", "LITRO"
+        "KG", "UNI", "PCT", "MC", "CX", "RL", "LITRO", "UNIDADE", "PACOTE", "MACO", "LATA", "GARRAFA"
     }
     candidatos = []
 
@@ -574,17 +556,22 @@ def extrair_melhor_candidato_descricao(valores: list[str]) -> str:
         if not v:
             continue
         v_norm = normalizar(v)
-        if len(v_norm) < 3:
-            continue
-        if v_norm in ignorados:
+        if len(v_norm) < 3 or v_norm in ignorados:
             continue
         if re.fullmatch(r"[\d.,R$\s/-]+", v_norm):
             continue
-        if re.fullmatch(r"ES\d+", v_norm) or v_norm.startswith("ES0"):
+        if re.fullmatch(r"(?:ES|E2|20)\d{5,}", v_norm):
             continue
         candidatos.append(v)
 
-    return max(candidatos, key=len) if candidatos else ""
+    if not candidatos:
+        return ""
+
+    com_dois_pontos = [c for c in candidatos if ":" in c]
+    if com_dois_pontos:
+        return com_dois_pontos[0]
+
+    return candidatos[0]
 
 
 def consolidar_linhas_quebradas_tabela(tabela: list[list[str]]) -> list[list[str]]:
@@ -633,12 +620,12 @@ def extrair_itens_fichas_pdf(pdf) -> list[str]:
     encontrados = []
 
     for pagina in pdf.pages:
-        texto_pag = pagina.extract_text() or ""
+        texto_pag = pagina.extract_text(x_tolerance=1.2) or ""
         texto_pag_norm = normalizar(texto_pag)
-        if "DESCRICAO DO INGREDIENTE" not in texto_pag_norm:
+        if "DESCRICAO DO INGREDIENTE" not in texto_pag_norm and "FICHA TECNICA" not in texto_pag_norm:
             continue
 
-        tabelas = pagina.extract_tables() or []
+        tabelas = pagina.extract_tables(table_settings=CONFIG_TABELAS_BLINDADA) or []
         achou_na_tabela = False
 
         for tabela in tabelas:
@@ -661,19 +648,16 @@ def extrair_itens_fichas_pdf(pdf) -> list[str]:
                         idx_ingrediente = novo_idx
                     continue
 
-                if "MODO DE PREPARO" in texto_linha_norm:
+                if "MODO DE PREPARO" in texto_linha_norm or "RENDIMENTO" in texto_linha_norm:
                     em_tabela_ingredientes = False
                     continue
 
                 if not em_tabela_ingredientes:
                     continue
 
-                if not linha_parece_item_valido(valores, modo_ficha_aula=True):
-                    continue
-
-                candidato = valores[idx_ingrediente] if idx_ingrediente < len(valores) else ""
+                candidato = extrair_melhor_candidato_descricao(valores, idx_preferencial=idx_ingrediente)
                 nome = extrair_nome_insumo_limpo(candidato)
-                if nome:
+                if nome and len(normalizar(nome)) >= 3:
                     achou_na_tabela = True
                     encontrados.append(nome)
 
@@ -685,12 +669,12 @@ def extrair_itens_fichas_pdf(pdf) -> list[str]:
                 if "DESCRICAO DO INGREDIENTE" in norm:
                     em_ingredientes = True
                     continue
-                if "MODO DE PREPARO" in norm:
+                if "MODO DE PREPARO" in norm or "RENDIMENTO" in norm:
                     em_ingredientes = False
                     continue
                 if em_ingredientes:
                     m = re.match(
-                        r"^\d+[.)-]?\s+(.+?)\s+\d+(?:[.,]\d+)?\s*(?:g|gr|kg|ml|l|uni|un|mc|mç|pct)\b",
+                        r"^(?:\d+[.)-]?\s+)?(.+?)\s+(?:\d+(?:[.,]\d+)?\s*)?(?:g|gr|kg|ml|l|uni|un|mc|mç|pct|q\.?b\.?|a gosto)\b",
                         linha_limpa,
                         flags=re.IGNORECASE,
                     )
@@ -703,7 +687,6 @@ def extrair_itens_fichas_pdf(pdf) -> list[str]:
 
 
 def construir_vocabulario_global_receitas(arquivos_pdf: list[Path]) -> set[str]:
-    """Passada 1 otimizada: usa extração rápida de texto para mapear ingredientes das receitas."""
     vocabulario = set()
     total = len(arquivos_pdf)
     print(f"Passada 1/2: Mapeando vocabulário de ingredientes em {total} PDFs...")
@@ -711,31 +694,10 @@ def construir_vocabulario_global_receitas(arquivos_pdf: list[Path]) -> set[str]:
     for idx, caminho_pdf in enumerate(arquivos_pdf, start=1):
         try:
             with pdfplumber.open(caminho_pdf) as pdf:
-                for pagina in pdf.pages:
-                    texto_pag = pagina.extract_text() or ""
-                    if "DESCRICAO DO INGREDIENTE" not in normalizar(texto_pag):
-                        continue
-
-                    em_ingredientes = False
-                    for linha in texto_pag.splitlines():
-                        linha_limpa = limpar_texto(linha)
-                        norm = normalizar(linha_limpa)
-                        if "DESCRICAO DO INGREDIENTE" in norm:
-                            em_ingredientes = True
-                            continue
-                        if "MODO DE PREPARO" in norm:
-                            em_ingredientes = False
-                            continue
-                        if em_ingredientes:
-                            m = re.match(
-                                r"^\d+[.)-]?\s+(.+?)\s+\d+(?:[.,]\d+)?\s*(?:g|gr|kg|ml|l|uni|un|mc|mç|pct)\b",
-                                linha_limpa,
-                                flags=re.IGNORECASE,
-                            )
-                            if m:
-                                nome = normalizar(extrair_nome_insumo_limpo(m.group(1)))
-                                if len(nome) >= 2 and nome not in CABECALHOS_E_SECOES:
-                                    vocabulario.add(nome)
+                for item in extrair_itens_fichas_pdf(pdf):
+                    nome_norm = normalizar(item)
+                    if len(nome_norm) >= 3 and nome_norm not in CABECALHOS_E_SECOES:
+                        vocabulario.add(nome_norm)
         except Exception:
             pass
 
@@ -752,18 +714,21 @@ def _registrar_candidato_insumo(
     vocabulario_receitas: set[str],
     insumos: list[str],
     suspeitos: list[str],
+    forcar_receita: bool = False,
 ) -> None:
     nome_insumo = extrair_nome_insumo_limpo(candidato)
-    if not nome_insumo or normalizar(nome_insumo) == nome_curso_norm:
+    norm_insumo = normalizar(nome_insumo)
+
+    if not nome_insumo or norm_insumo == nome_curso_norm or norm_insumo in nome_curso_norm:
         return
 
     status_item = classificar_item(nome_insumo, vocabulario_receitas)
 
-    if status_item == "INSUMO_CONFIRMADO":
-        if not any(normalizar(x) == normalizar(nome_insumo) for x in insumos):
+    if status_item == "INSUMO_CONFIRMADO" or (forcar_receita and status_item == "SUSPEITO"):
+        if not any(normalizar(x) == norm_insumo for x in insumos):
             insumos.append(nome_insumo)
     elif status_item == "SUSPEITO":
-        if not any(normalizar(x) == normalizar(nome_insumo) for x in suspeitos):
+        if not any(normalizar(x) == norm_insumo for x in suspeitos):
             suspeitos.append(nome_insumo)
 
 
@@ -782,7 +747,7 @@ def extrair_insumos_pdf(
     )
 
     for pagina in pdf.pages:
-        texto_pag = pagina.extract_text() or ""
+        texto_pag = pagina.extract_text(x_tolerance=1.2) or ""
         if "(cid:" in texto_pag.lower():
             tem_cid = True
 
@@ -803,22 +768,22 @@ def extrair_insumos_pdf(
             continue
 
         achou_na_pagina = False
+        tabelas = pagina.extract_tables(table_settings=CONFIG_TABELAS_BLINDADA) or []
 
-        for tabela in pagina.extract_tables() or []:
+        for tabela in tabelas:
             if not tabela or tabela_e_de_metadados_ou_cronograma(tabela):
                 continue
 
             linhas_tratadas = consolidar_linhas_quebradas_tabela(tabela)
+            idx_desc = None
 
             for valores in linhas_tratadas:
                 texto_linha_norm = normalizar(" ".join(v for v in valores if v))
                 if any(h in texto_linha_norm for h in ("CODIGO ITEM MXM", "DESCRICAO/ESPECIFICACAO")):
+                    idx_desc = identificar_indice_coluna_descricao(valores)
                     continue
 
-                if not linha_parece_item_valido(valores, modo_ficha_aula=False):
-                    continue
-
-                candidato = extrair_melhor_candidato_descricao(valores)
+                candidato = extrair_melhor_candidato_descricao(valores, idx_preferencial=idx_desc)
                 antes_ins = len(insumos)
                 antes_susp = len(suspeitos)
                 _registrar_candidato_insumo(
@@ -838,13 +803,42 @@ def extrair_insumos_pdf(
                         linha_limpa, nome_curso_norm, vocabulario_receitas, insumos, suspeitos
                     )
 
+    for cand in extrair_itens_fichas_pdf(pdf):
+        _registrar_candidato_insumo(
+            cand, nome_curso_norm, vocabulario_receitas, insumos, suspeitos, forcar_receita=True
+        )
+
     if not insumos:
-        for cand in extrair_itens_fichas_pdf(pdf):
-            if not cand or normalizar(cand) == nome_curso_norm:
-                continue
-            if classificar_item(cand, vocabulario_receitas) != "DESCARTAR":
-                if not any(normalizar(x) == normalizar(cand) for x in insumos):
-                    insumos.append(cand)
+        for susp in list(suspeitos):
+            if REGEX_SINAIS_ALIMENTO.search(normalizar(susp)) or normalizar(susp) in vocabulario_receitas:
+                insumos.append(susp)
+                suspeitos.remove(susp)
+
+        for pagina in pdf.pages:
+            for tabela in pagina.extract_tables(table_settings=CONFIG_TABELAS_BLINDADA) or []:
+                for linha in tabela or []:
+                    for cel in linha or []:
+                        if not cel:
+                            continue
+                        nome_cand = extrair_nome_insumo_limpo(cel)
+                        norm_cand = normalizar(nome_cand)
+                        if not nome_cand or norm_cand in nome_curso_norm:
+                            continue
+                        if classificar_item(nome_cand, vocabulario_receitas) == "INSUMO_CONFIRMADO":
+                            if not any(normalizar(x) == norm_cand for x in insumos):
+                                insumos.append(nome_cand)
+
+            texto_pag = pagina.extract_text(x_tolerance=1.2) or ""
+            for linha in texto_pag.splitlines():
+                linha_limpa = limpar_texto(linha)
+                if re.search(r"\b(?:\d+(?:[.,]\d+)?\s*(?:g|gr|kg|ml|l|uni|un|pct|cx|lata|garrafa|maco)|ES\d{6,})\b", linha_limpa, re.IGNORECASE):
+                    nome_cand = extrair_nome_insumo_limpo(linha_limpa)
+                    norm_cand = normalizar(nome_cand)
+                    if not nome_cand or norm_cand in nome_curso_norm:
+                        continue
+                    if classificar_item(nome_cand, vocabulario_receitas) == "INSUMO_CONFIRMADO":
+                        if not any(normalizar(x) == norm_cand for x in insumos):
+                            insumos.append(nome_cand)
 
     return insumos, suspeitos, tem_cid
 
